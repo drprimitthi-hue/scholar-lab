@@ -1,0 +1,42 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Security rules tests (Firestore + Storage emulators)
+        run: npx --yes firebase-tools@15 emulators:exec --only firestore,storage --project demo-scholar-lab "npx vitest run tests/rules"
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: demo-scholar-lab
+
+  control-centre:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-centre
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: control-centre/package-lock.json }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
