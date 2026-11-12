@@ -1,0 +1,146 @@
+rules_version = '2';
+
+// Security model:
+//  * Browsers may only READ, and only what their role allows.
+//  * ALL writes go through the server API (Admin SDK), which validates input and writes the audit log.
+//  * Supervisor and mentors must have signed in with two-factor authentication.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function claims() { return request.auth.token; }
+    function active() { return signedIn() && claims().get('active', false) == true; }
+    function role() { return claims().get('role', ''); }
+    function mfa() { return claims().firebase.get('sign_in_second_factor', null) != null; }
+
+    function isSupervisor() { return active() && role() == 'supervisor' && mfa(); }
+    function isMentor() { return active() && role() == 'mentor' && mfa(); }
+    function isScholar() { return active() && (role() == 'scholar' || role() == 'alumni'); }
+    function isMember() { return isSupervisor() || isMentor() || isScholar(); }
+
+    // Record-level access for anything belonging to a scholar (doc carries uid + mentorUids).
+    function canRead(d) {
+      return isSupervisor()
+        || (isMentor() && request.auth.uid in d.mentorUids)
+        || (isScholar() && d.uid == request.auth.uid);
+    }
+
+    // Public website data (contains only non-sensitive fields written by the server).
+    match /publicSite/{docId} {
+      allow read: if true;
+    }
+
+    // system/* (setup marker, licence tokens) is server-only: no client access.
+
+    // Public website mirrors: written only by the server, containing only publishable fields.
+    match /publicPeople/{id} { allow read: if true; }
+    match /publicProjects/{id} { allow read: if true; }
+    match /publicNews/{id} { allow read: if true; }
+    match /publicOpenings/{id} { allow read: if true; }
+    match /publicPublications/{id} { allow read: if true; }
+    // Their private sources: supervisor only.
+    match /siteContent/{id} { allow read: if isSupervisor(); }
+    match /siteNews/{id} { allow read: if isSupervisor(); }
+    match /siteOpenings/{id} { allow read: if isSupervisor(); }
+    match /sitePublications/{id} { allow read: if isSupervisor(); }
+
+    match /settings/{docId} {
+      allow read: if isMember();
+    }
+
+    match /milestoneTemplates/{programmeId} {
+      allow read: if isSupervisor() || isMentor();
+    }
+
+    // Own account doc is readable before 2FA so the app can route to password change / 2FA setup.
+    match /users/{uid} {
+      allow read: if isSupervisor() || (signedIn() && request.auth.uid == uid);
+    }
+
+    match /scholars/{uid} {
+      allow read: if canRead(resource.data);
+      match /milestones/{id} { allow read: if canRead(resource.data); }
+      match /documents/{id} { allow read: if canRead(resource.data); }
+    }
+
+    // Collection-group reads of milestones (dashboards); same record-level check.
+    match /{path=**}/milestones/{id} { allow read: if canRead(resource.data); }
+
+    match /presence/{id} { allow read: if canRead(resource.data); }
+    match /leaves/{id} { allow read: if canRead(resource.data); }
+
+    // Private supervisor notes about a scholar: supervisor only (kept out of the scholar-readable record).
+    match /scholarNotes/{uid} { allow read: if isSupervisor(); }
+
+    // ---------- Projects & literature (Phase 2) ----------
+    function project(pid) { return get(/databases/$(database)/documents/projects/$(pid)).data; }
+    function inProject(p) {
+      return isSupervisor()
+        || (isMentor() && request.auth.uid in p.mentorUids)
+        || (isScholar() && request.auth.uid in p.scholarUids);
+    }
+
+    match /projects/{pid} {
+      allow read: if inProject(resource.data);
+      match /literature/{lid} { allow read: if inProject(project(pid)); }
+      match /concepts/{cid} { allow read: if inProject(project(pid)); }
+      // Prototypes are team work: everyone on the project sees them, their stage gates and logbook.
+      match /prototypes/{prid} {
+        allow read: if inProject(project(pid));
+        match /log/{eid} { allow read: if inProject(project(pid)); }
+      }
+      match /plans/{uid} {
+        allow read: if isSupervisor()
+          || (isMentor() && request.auth.uid in project(pid).mentorUids)
+          || (isScholar() && request.auth.uid == uid);
+      }
+      match /suggestions/{sid} {
+        allow read: if isSupervisor()
+          || (isMentor() && request.auth.uid in project(pid).mentorUids)
+          || (isScholar() && resource.data.uid == request.auth.uid);
+      }
+    }
+
+    // Reading Cards: own / assigned-mentor / supervisor. Other scholars of the project see
+    // ACCEPTED cards only while the supervisor has opened them to the group (server fills groupUids).
+    match /readingCards/{id} {
+      allow read: if canRead(resource.data)
+        || (isScholar() && request.auth.uid in resource.data.groupUids && resource.data.status == 'accepted');
+    }
+
+    // Concept Notes follow the Reading Card model (own / mentor / supervisor; accepted ones to the group when opened).
+    match /conceptNotes/{id} {
+      allow read: if canRead(resource.data)
+        || (isScholar() && request.auth.uid in resource.data.groupUids && resource.data.status == 'accepted');
+    }
+    // Seminars are group events: every active lab member sees the schedule, speakers, attendance and action items.
+    match /sessions/{id} { allow read: if isMember(); }
+    // Scores: the speaker, their mentors and the supervisor only.
+    match /sessionScores/{id} { allow read: if canRead(resource.data); }
+    match /tasks/{id} { allow read: if canRead(resource.data); }
+
+    // Outputs register: supervisor, the members' mentors, and the lab members on the output.
+    match /outputs/{id} {
+      allow read: if isSupervisor()
+        || (isMentor() && request.auth.uid in resource.data.mentorUids)
+        || (isScholar() && request.auth.uid in resource.data.memberUids);
+    }
+    // fileIndex/* is server-only (no client access).
+
+    // My Office: private to the supervisor. Nobody else can read it; nobody writes from a browser.
+    match /officeDiary/{id} { allow read: if isSupervisor(); }
+    match /officeMeetings/{id} { allow read: if isSupervisor(); }
+    match /officeDuties/{id} { allow read: if isSupervisor(); }
+    match /officeOrders/{id} { allow read: if isSupervisor(); }
+    match /officeRecords/{id} { allow read: if isSupervisor(); }
+    match /officeSemesters/{id} { allow read: if isSupervisor(); }
+    match /officeSettings/{id} { allow read: if isSupervisor(); }
+    match /officeCv/{id} { allow read: if isSupervisor(); }
+
+    match /auditLog/{id} { allow read: if isSupervisor(); }
+    match /deletionReceipts/{id} { allow read: if isSupervisor(); }
+    match /supervisionRecords/{id} { allow read: if isSupervisor(); }
+
+    // Everything else: denied. No client writes anywhere.
+  }
+}

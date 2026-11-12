@@ -1,0 +1,31 @@
+rules_version = '2';
+
+// Files are private. Browsers may only UPLOAD new files into a scholar's own folder
+// (the scholar or the supervisor), or the supervisor's own office folder. Nobody reads directly: downloads use 5-minute signed
+// links issued by the server after an access check. No overwrite, no delete from browsers.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function active() { return request.auth != null && request.auth.token.get('active', false) == true; }
+    function isSupervisor() {
+      return active() && request.auth.token.get('role', '') == 'supervisor'
+        && request.auth.token.firebase.get('sign_in_second_factor', null) != null;
+    }
+    function okFile() {
+      return request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/(png|jpeg|webp)');
+    }
+
+    match /scholars/{uid}/uploads/{fileName} {
+      allow create: if okFile()
+        && fileName.matches('[A-Za-z0-9._-]{1,200}')
+        && (isSupervisor()
+            || (active() && request.auth.token.get('role', '') == 'scholar' && request.auth.uid == uid));
+      allow read, update, delete: if false;
+    }
+    // My Office files: only the supervisor, only into their own folder.
+    match /office/{uid}/{fileName} {
+      allow create: if okFile() && fileName.matches('[A-Za-z0-9._-]{1,200}') && isSupervisor() && request.auth.uid == uid;
+      allow read, update, delete: if false;
+    }
+  }
+}
