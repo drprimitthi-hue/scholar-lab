@@ -76,7 +76,7 @@ describe("Cloudinary storage (simulated)", async () => {
   });
 
   it("self-test reports success and a clear failure", async () => {
-    let stored: Uint8Array | null = null;
+    let stored: Uint8Array<ArrayBuffer> | null = null;
     respond = (c) => {
       if (c.url.endsWith("/raw/upload")) { stored = new Uint8Array(21); return json({}); }
       if (c.url.includes("/resources/raw/authenticated/")) return json({ bytes: 21 });
